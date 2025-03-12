@@ -9,6 +9,7 @@ FAISS version: 1.7.4
 ONNX Runtime version: 1.14.1   
 
 cài phiên bản tương ứng nếu gặp xung đột  
+
 các model sử dụng: https://drive.google.com/drive/folders/12AzwgwdY71oFnJRYaGC_VR9nFyZEyPrk?usp=sharing
 
 get_data_faiss.py có tác dụng thêm ảnh mới bằng cách nhập tên nhãn và bấm 't' để bắt đầu trích xuất ảnh 'q' để thoát
