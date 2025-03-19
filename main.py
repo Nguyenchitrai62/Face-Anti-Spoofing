@@ -2,19 +2,20 @@ import cv2
 import torch
 import torchvision.transforms as transforms
 from PIL import Image
-from models import AENet  
 
 import faiss
 import numpy as np
 from scipy.spatial.distance import cosine
+from ultralytics import YOLO
+import onnxruntime as ort
 
 # Load FAISS index và nhãn
 index = faiss.read_index("face_index.bin")
 labels = np.load("face_labels.npy")
-    
+
 def find_face_label(query_vector, threshold=0.7):
     score_max = -1
-    query_vector = query_vector.reshape(-1)  # Đảm bảo vector đầu vào có dạng (512,)
+    query_vector = query_vector.reshape(-1)
 
     for i in range(index.ntotal):  
         stored_vector = np.zeros((512,), dtype=np.float32)
@@ -28,13 +29,9 @@ def find_face_label(query_vector, threshold=0.7):
             score_max = similarity_score
     return "unknown", score_max 
 
-
-from ultralytics import YOLO
 # Load model YOLOv8-Face
 model_yolo = YOLO("yolov8n-face.pt")
 
-
-import onnxruntime as ort
 # Load ArcFace model
 arcface_model = "w600k_r50.onnx"
 session = ort.InferenceSession(arcface_model, providers=['CPUExecutionProvider'])
@@ -54,14 +51,14 @@ def resize_with_padding(image, target_size=(112, 112)):
 
     padded = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(0, 0, 0))
     padded = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)  
-    padded = np.transpose(padded, (2, 0, 1))  # Đưa kênh màu lên đầu (C, H, W)
+    padded = np.transpose(padded, (2, 0, 1))  
     padded = (padded - 127.5) / 127.5 
     padded = np.expand_dims(padded, axis=0).astype(np.float32) 
     
     padded = session.run(None, {input_name: padded})[0]
     return padded.flatten()
 
-# tiền xử lý frame từ camera
+# Tiền xử lý frame từ camera
 def preprocess_frame(frame):
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     img = Image.fromarray(frame_rgb)
@@ -72,7 +69,7 @@ def preprocess_frame(frame):
     img = transform(img).unsqueeze(0) 
     return img
 
-# dự đoán và trả về nhãn
+# Dự đoán và trả về nhãn
 def predict_frame(model, frame):
     img_tensor = preprocess_frame(frame)
     with torch.no_grad():
@@ -81,11 +78,9 @@ def predict_frame(model, frame):
         label = "Spoof" if probabilities[1] > probabilities[0] else "Live"
         return label, probabilities[0], probabilities[1]
 
-def run_camera(checkpoint_path="ckpt_iter.pth.tar"):
-    model = AENet(num_classes=2)  
-    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
-    state_dict = {k.replace('module.', ''): v for k, v in checkpoint['state_dict'].items()}
-    model.load_state_dict(state_dict, strict=False)
+def run_camera(model_path="AENet.pt"):
+    # Load mô hình đã lưu mà không cần định nghĩa lại kiến trúc
+    model = torch.load(model_path, map_location=torch.device('cpu'))
     model.eval()
     print("Model loaded successfully.")
 
@@ -99,9 +94,8 @@ def run_camera(checkpoint_path="ckpt_iter.pth.tar"):
             print("Không thể đọc frame từ camera.")
             break
         
-        results = model_yolo(frame) 
+        results = model_yolo(frame)  
 
-        # face_images = []
         for i, box in enumerate(results[0].boxes):
             conf = box.conf[0].item()
             if conf < 0.7:
