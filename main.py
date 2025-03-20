@@ -78,23 +78,36 @@ def predict_frame(model, frame):
         label = "Spoof" if probabilities[1] > probabilities[0] else "Live"
         return label, probabilities[0], probabilities[1]
 
+import time
+
 def run_camera(model_path="AENet.pt"):
-    # Load mô hình đã lưu mà không cần định nghĩa lại kiến trúc
+    # Load mô hình đã lưu
     model = torch.load(model_path, map_location=torch.device('cpu'))
     model.eval()
     print("Model loaded successfully.")
 
-    cap = cv2.VideoCapture(2)  # 0 là camera mặc định
+    cap = cv2.VideoCapture(2)
     if not cap.isOpened():
         raise ValueError("Không thể mở camera. Kiểm tra xem camera có hoạt động không.")
 
     while True:
+        tick_start = cv2.getTickCount()
+
+        start_time = time.time()  # Bắt đầu đo toàn bộ vòng lặp
+        
         ret, frame = cap.read()
         if not ret:
             print("Không thể đọc frame từ camera.")
             break
-        
+
+        # Đo thời gian YOLOv8-Face detect
+        yolo_start = time.time()
         results = model_yolo(frame)  
+        yolo_time = time.time() - yolo_start
+
+        face_process_time = 0
+        find_label_time = 0
+        predict_time = 0
 
         for i, box in enumerate(results[0].boxes):
             conf = box.conf[0].item()
@@ -103,14 +116,36 @@ def run_camera(model_path="AENet.pt"):
 
             x1, y1, x2, y2 = map(int, box.xyxy[0]) 
             face = frame[y1:y2, x1:x2]  
-            
-            person_name, score = find_face_label(resize_with_padding(face), 0.7)
 
+            # Đo thời gian resize + ArcFace
+            face_start = time.time()
+            face_embedding = resize_with_padding(face)
+            face_process_time += time.time() - face_start
+
+            # Đo thời gian tìm nhãn với FAISS
+            find_label_start = time.time()
+            person_name, score = find_face_label(face_embedding, 0.7)
+            find_label_time += time.time() - find_label_start
+
+            # Đo thời gian chạy mô hình Anti-Spoofing
+            predict_start = time.time()
             label, prob_live, prob_spoof = predict_frame(model, face)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0) if prob_live > 0.95 else (0, 0, 255), 2)
+            predict_time += time.time() - predict_start
 
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0) if prob_live > 0.95 else (0, 0, 255), 2)
             text = f"Live: {prob_live:.2f} | {person_name}:({score:.2f})"
             cv2.putText(frame, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+        # Đo tổng thời gian
+        total_time = time.time() - start_time
+        fps = 1.0 / total_time
+
+        # Hiển thị thời gian đo được
+        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(frame, f"YOLO: {yolo_time:.3f}s", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(frame, f"resize & arcface: {face_process_time:.3f}s", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(frame, f"faiss: {find_label_time:.3f}s", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(frame, f"live/spoof: {predict_time:.3f}s", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
         cv2.imshow("Face Anti-Spoofing", frame)
 
