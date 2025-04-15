@@ -1,4 +1,5 @@
 import subprocess
+import os
 
 # Đường dẫn đến file ONNX
 onnx_model = "w600k_r50.onnx"
@@ -6,9 +7,12 @@ onnx_model = "w600k_r50.onnx"
 # Đường dẫn đến công cụ onnx2ncnn (đã được tải về từ ncnn-20241226-windows-vs2022.zip)
 onnx2ncnn_path = "./ncnn/x64/bin/onnx2ncnn.exe"
 
+# Lấy tên model từ tên file ONNX (loại phần mở rộng .onnx)
+model_name = os.path.splitext(os.path.basename(onnx_model))[0]
+
 # Đường dẫn output cho model NCNN
-param_file = "w600k_r50.param"
-bin_file = "w600k_r50.bin"
+param_file = f"{model_name}.param"
+bin_file = f"{model_name}.bin"
 
 # Lệnh chuyển đổi
 command = [onnx2ncnn_path, onnx_model, param_file, bin_file]
