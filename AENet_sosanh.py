@@ -77,8 +77,6 @@ def compare_models(model_pytorch, model_onnx, frame):
     
     return prob_live_pytorch, prob_spoof_pytorch, embedding_onnx, time_pytorch, time_onnx, similarity
 
-
-
 # Main function to load image and compare models
 def compare_with_image(model_pytorch, model_onnx, input_name, image_path):
     # Load image
