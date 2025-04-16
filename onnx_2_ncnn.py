@@ -2,7 +2,7 @@ import subprocess
 import os
 
 # Đường dẫn đến file ONNX
-onnx_model = "w600k_r50.onnx"
+onnx_model = "AENet.onnx"
 
 # Đường dẫn đến công cụ onnx2ncnn (đã được tải về từ ncnn-20241226-windows-vs2022.zip)
 onnx2ncnn_path = "./ncnn/x64/bin/onnx2ncnn.exe"

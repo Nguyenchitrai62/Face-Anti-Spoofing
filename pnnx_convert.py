@@ -1,10 +1,12 @@
 import subprocess
 
-# === Tên model ONNX cần convert ===
-onnx_model = "yolov8n-face.onnx"  # Đổi tên file nếu cần
+onnx_model = "AENet.onnx"
 
-# === Gọi lệnh pnnx ===
-cmd = ["./pnnx/pnnx", onnx_model]
+# Thêm inputshape theo đúng yêu cầu của mô hình
+cmd = [
+    "./pnnx/pnnx", 
+    onnx_model, 
+    "inputshape=[1,3,224,224]"
+]
 
-# === Thực thi lệnh ===
 subprocess.run(cmd)

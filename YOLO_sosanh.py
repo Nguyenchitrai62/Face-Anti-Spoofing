@@ -60,7 +60,7 @@ def detect_faces_ncnn(img):
         x, y, w_box, h_box = boxes[i]
         cv2.rectangle(result, (x, y), (x + w_box, y + h_box), (0, 0, 255), 2)
         cv2.putText(result, f"{confidences[i]:.2f}", (x, y - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
     return result, elapsed
 
@@ -105,7 +105,7 @@ def detect_faces_onnx(img):
         x, y, w, h = boxes[i]
         cv2.rectangle(result, (x, y), (x + w, y + h), (0, 255, 0), 2)
         cv2.putText(result, f"{confidences[i]:.2f}", (x, y - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     return result, elapsed
 
 
@@ -124,13 +124,13 @@ def detect_faces_pt(img):
             continue
         cv2.rectangle(result, (x1, y1), (x2, y2), (255, 0, 0), 2)
         cv2.putText(result, f"{conf:.2f}", (x1, y1 - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
     return result, elapsed
 
 
 # --- Run and Compare ---
 if __name__ == "__main__":
-    image_path = "dataset/ori/Akshay Kumar/anh_10.jpg"
+    image_path = "dataset/ori/Akshay Kumar/anh_11.jpg"
     img = cv2.imread(image_path)
 
     if img is None:
@@ -143,7 +143,7 @@ if __name__ == "__main__":
     print(f"[ONNX] Inference time: {time_onnx:.3f} seconds")
 
     img_pt, time_pt = detect_faces_pt(img)
-    print(f"[PyTorch] Inference time: {time_pt:.3f} seconds")
+    # print(f"[PyTorch] Inference time: {time_pt:.3f} seconds")
 
     # Ghép ảnh theo chiều dọc
     top_row = np.hstack([img_pt, img_onnx])
@@ -152,8 +152,8 @@ if __name__ == "__main__":
 
     # Thêm text thời gian
     h, w = img.shape[:2]
-    cv2.putText(concat, f"PyTorch: {time_pt:.3f}s", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+    # cv2.putText(concat, f"PyTorch: {time_pt:.3f}s", (10, 30),
+    #             cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
     cv2.putText(concat, f"ONNX: {time_onnx:.3f}s", (w + 10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
     cv2.putText(concat, f"NCNN: {time_ncnn:.3f}s", (10, h + 30),

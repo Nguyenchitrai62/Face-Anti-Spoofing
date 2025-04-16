@@ -1,109 +1,85 @@
 import torch
 import onnxruntime as ort
-import cv2
-import numpy as np
-from scipy.spatial.distance import cosine
+import ncnn
 from PIL import Image
-import time
-import torchvision.transforms as transforms  # Thêm dòng này để import transforms
+import numpy as np
+import torchvision.transforms as transforms
+import os
+import torch.nn.functional as F
 
-# Load model PyTorch (TorchScript)
-def load_pytorch_model(model_path):
-    model = torch.jit.load(model_path, map_location=torch.device('cpu'))
-    model.eval()
-    return model
+# Load TorchScript model (.pt)
+torch_model = torch.jit.load("AENet.pt", map_location=torch.device('cpu'))
+torch_model.eval()
 
-# Load model NCNN (ONNX)
-def load_onnx_model(onnx_model_path):
-    session = ort.InferenceSession(onnx_model_path, providers=['CPUExecutionProvider'])
-    input_name = session.get_inputs()[0].name
-    return session, input_name
+# Load ONNX model
+onnx_session = ort.InferenceSession("AENet.onnx", providers=["CPUExecutionProvider"])
+onnx_input_name = onnx_session.get_inputs()[0].name
 
-# Preprocessing for PyTorch model
-def preprocess_pytorch_frame(frame):
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    img = Image.fromarray(frame_rgb)
+# Load NCNN model
+def load_ncnn_model():
+    ncnn_net = ncnn.Net()
+    ncnn_net.load_param("AENet.ncnn.param")
+    ncnn_net.load_model("AENet.ncnn.bin")
+    return ncnn_net
+
+# Tiền xử lý ảnh
+def preprocess_image(image_path):
+    img = Image.open(image_path).convert("RGB")
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
     ])
-    img = transform(img).unsqueeze(0)
-    return img
+    img_tensor = transform(img).unsqueeze(0)  # shape (1, 3, 224, 224)
+    return img_tensor
 
-# Preprocessing for NCNN model
-def preprocess_onnx_frame(frame, session, input_name):
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    img = Image.fromarray(frame_rgb)
-    transform = transforms.Compose([
-        transforms.Resize((112, 112)),
-        transforms.ToTensor(),
-    ])
-    img = transform(img).unsqueeze(0).numpy()
-    return session.run(None, {input_name: img})[0].flatten()
+# Dự đoán với NCNN
+def test_inference_ncnn(image_path, ncnn_net):
+    image = preprocess_image(image_path)
+    ex = ncnn_net.create_extractor()
+    ex.input("in0", ncnn.Mat(image.squeeze(0).numpy()).clone())
+    _, out0 = ex.extract("out0")
+    out = torch.from_numpy(np.array(out0)).unsqueeze(0)
+    probs = F.softmax(out, dim=1)
+    return probs
 
-# Function to predict using PyTorch model
-def predict_pytorch_model(model, frame):
-    img_tensor = preprocess_pytorch_frame(frame)
+# So sánh kết quả giữa 3 model: PyTorch, ONNX và NCNN
+def compare_models(image_path):
+    input_tensor = preprocess_image(image_path)
+
+    # PyTorch model prediction
     with torch.no_grad():
-        output = model(img_tensor)
-        probabilities = torch.nn.functional.softmax(output, dim=1).numpy()[0]
-        return probabilities[0], probabilities[1]
+        pt_output = torch_model(input_tensor)
+        pt_probs = torch.nn.functional.softmax(pt_output, dim=1).numpy()[0]
 
-# Function to predict using NCNN model
-def predict_onnx_model(session, input_name, frame):
-    embedding = preprocess_onnx_frame(frame, session, input_name)
-    return embedding
+    # ONNX model prediction
+    onnx_input = input_tensor.numpy().astype(np.float32)
+    onnx_output = onnx_session.run(None, {onnx_input_name: onnx_input})[0]
+    onnx_probs = torch.nn.functional.softmax(torch.tensor(onnx_output), dim=1).numpy()[0]
 
-# Compare models for performance and prediction accuracy
-def compare_models(model_pytorch, model_onnx, frame):
-    # Time for PyTorch model prediction
-    start_pytorch = time.time()
-    prob_live_pytorch, prob_spoof_pytorch = predict_pytorch_model(model_pytorch, frame)
-    time_pytorch = time.time() - start_pytorch
-    
-    # Time for NCNN model prediction
-    start_onnx = time.time()
-    embedding_onnx = predict_onnx_model(model_onnx, input_name, frame)
-    time_onnx = time.time() - start_onnx
-    
-    # Calculate cosine similarity between PyTorch predictions and ONNX embedding
-    # You can choose to compute cosine similarity between PyTorch's 'probabilities' and 'embedding_onnx' if needed
-    similarity = cosine([prob_live_pytorch, prob_spoof_pytorch], embedding_onnx[:2])
-    
-    # Print results
-    print(f"PyTorch model: Live: {prob_live_pytorch:.2f}, Spoof: {prob_spoof_pytorch:.2f} (Time: {time_pytorch:.4f}s)")
-    print(f"ONNX model: Time: {time_onnx:.4f}s")
-    print(f"Cosine Similarity between PyTorch and ONNX predictions: {similarity:.4f}")
-    
-    return prob_live_pytorch, prob_spoof_pytorch, embedding_onnx, time_pytorch, time_onnx, similarity
+    # NCNN model prediction
+    ncnn_net = load_ncnn_model()
+    ncnn_probs = test_inference_ncnn(image_path, ncnn_net)[0].numpy()
 
-# Main function to load image and compare models
-def compare_with_image(model_pytorch, model_onnx, input_name, image_path):
-    # Load image
-    frame = cv2.imread(image_path)
-    if frame is None:
-        print("Không thể đọc ảnh. Kiểm tra lại đường dẫn ảnh.")
-        return
+    # In kết quả
+    print(f"\n📸 Ảnh: {os.path.basename(image_path)}")
+    print(f"PyTorch - Live: {pt_probs[0]:.4f}, Spoof: {pt_probs[1]:.4f}")
+    print(f"ONNX    - Live: {onnx_probs[0]:.4f}, Spoof: {onnx_probs[1]:.4f}")
+    print(f"NCNN    - Live: {ncnn_probs[0]:.4f}, Spoof: {ncnn_probs[1]:.4f}")
 
-    # Run prediction for both models
-    prob_live_pytorch, prob_spoof_pytorch, embedding_onnx, time_pytorch, time_onnx, similarity = compare_models(model_pytorch, model_onnx, frame)
+    # Tính sai khác
+    pt_diff = np.abs(pt_probs - ncnn_probs)
+    onnx_diff = np.abs(onnx_probs - ncnn_probs)
+    print(f"Δ Sai khác giữa PyTorch và NCNN: {pt_diff}, Tổng: {np.sum(pt_diff):.6f}")
+    print(f"Δ Sai khác giữa ONNX và NCNN: {onnx_diff}, Tổng: {np.sum(onnx_diff):.6f}")
 
-    # Show predictions on image
-    label = "Live" if prob_live_pytorch > 0.95 else "Spoof"
-    cv2.putText(frame, f"Live: {prob_live_pytorch:.2f} | Spoof: {prob_spoof_pytorch:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-    cv2.putText(frame, f"Cosine Similarity: {similarity:.4f}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.imshow("Face Anti-Spoofing", frame)
-    cv2.waitKey(0)  # Wait for a key press to close the image window
-    cv2.destroyAllWindows()
-
+# Lặp qua các ảnh từ anh_0.jpg đến anh_10.jpg
+def compare_images_in_folder():
+    for i in range(6,21):  # từ 0 đến 10
+        img_path = f"./dataset/train/Akshay Kumar/anh_{i}.jpg"
+        if os.path.exists(img_path):
+            compare_models(img_path)
+        else:
+            print(f"⚠️ Không tìm thấy ảnh: {img_path}")
 
 if __name__ == "__main__":
-    # Load both models
-    model_pytorch = load_pytorch_model("AENet.pt")
-    model_onnx, input_name = load_onnx_model("w600k_r50.onnx")
-    
-    # Specify the image path
-    image_path = "dataset/train/Akshay Kumar/anh_10.jpg"
-    
-    # Compare models with a single image
-    compare_with_image(model_pytorch, model_onnx, input_name, image_path)
+    compare_images_in_folder()
