@@ -6,6 +6,7 @@ import onnxruntime as ort
 import time
 import tkinter as tk
 from tkinter import simpledialog
+import os
 
 CONFIDENCE_THRESHOLD = 0.7
 TARGET_SIZE = (112, 112)
@@ -18,10 +19,20 @@ arcface_model = "w600k_r50.onnx"
 session = ort.InferenceSession(arcface_model, providers=['CPUExecutionProvider'])
 input_name = session.get_inputs()[0].name
 
-# Khởi tạo FAISS
+# Load FAISS index và labels nếu đã tồn tại
 D = 512
-index = faiss.IndexFlatL2(D)
+index_file = "face_index.bin"
+labels_file = "face_labels.npy"
+index = None
 labels = []
+
+if os.path.exists(index_file) and os.path.exists(labels_file):
+    print("Tải FAISS index và labels từ file...")
+    index = faiss.read_index(index_file)
+    labels = list(np.load(labels_file, allow_pickle=True))
+else:
+    print("Tạo FAISS index mới...")
+    index = faiss.IndexFlatL2(D)
 
 def resize_with_padding(image, target_size=(112, 112)):
     h, w = image.shape[:2]
@@ -112,8 +123,9 @@ def capture_and_store_faces():
     cap.release()
     cv2.destroyAllWindows()
     
-    faiss.write_index(index, "face_index.bin")
-    np.save("face_labels.npy", labels)
-    print("Lưu xong FAISS index và nhãn.")
+    # Lưu lại FAISS index và labels
+    faiss.write_index(index, index_file)
+    np.save(labels_file, labels)
+    print("Cập nhật và lưu FAISS index cùng nhãn thành công.")
 
 capture_and_store_faces()
