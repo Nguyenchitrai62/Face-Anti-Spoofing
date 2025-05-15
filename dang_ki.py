@@ -12,7 +12,7 @@ CONFIDENCE_THRESHOLD = 0.7
 TARGET_SIZE = (112, 112)
 SQUARE_SIZE = 300  # Kích thước khung vuông ở giữa
 CENTER_THRESHOLD = 0.1  # Ngưỡng để xác định khuôn mặt ở trung tâm
-SIZE_THRESHOLD = 0.1  # Ngưỡng để xác định kích thước khuôn mặt phù hợp
+SIZE_THRESHOLD = 0.1 # Ngưỡng để xác định kích thước khuôn mặt phù hợp
 
 # Load model YOLOv8-Face
 model = YOLO("yolov8n-face.pt")
