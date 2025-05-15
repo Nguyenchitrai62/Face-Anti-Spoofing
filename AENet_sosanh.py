@@ -6,6 +6,7 @@ import numpy as np
 import torchvision.transforms as transforms
 import os
 import torch.nn.functional as F
+import time
 
 # Load TorchScript model (.pt)
 torch_model = torch.jit.load("AENet.pt", map_location=torch.device('cpu'))
@@ -42,29 +43,35 @@ def test_inference_ncnn(image_path, ncnn_net):
     probs = F.softmax(out, dim=1)
     return probs
 
-# So sánh kết quả giữa 3 model: PyTorch, ONNX và NCNN
-def compare_models(image_path):
+# So sánh kết quả và thời gian giữa 3 model
+def compare_models(image_path, stats):
     input_tensor = preprocess_image(image_path)
 
-    # PyTorch model prediction
+    # PyTorch
+    start = time.time()
     with torch.no_grad():
         pt_output = torch_model(input_tensor)
         pt_probs = torch.nn.functional.softmax(pt_output, dim=1).numpy()[0]
+    pt_time = time.time() - start
 
-    # ONNX model prediction
+    # ONNX
+    start = time.time()
     onnx_input = input_tensor.numpy().astype(np.float32)
     onnx_output = onnx_session.run(None, {onnx_input_name: onnx_input})[0]
     onnx_probs = torch.nn.functional.softmax(torch.tensor(onnx_output), dim=1).numpy()[0]
+    onnx_time = time.time() - start
 
-    # NCNN model prediction
+    # NCNN
     ncnn_net = load_ncnn_model()
+    start = time.time()
     ncnn_probs = test_inference_ncnn(image_path, ncnn_net)[0].numpy()
+    ncnn_time = time.time() - start
 
     # In kết quả
     print(f"\n📸 Ảnh: {os.path.basename(image_path)}")
-    print(f"PyTorch - Live: {pt_probs[0]:.4f}, Spoof: {pt_probs[1]:.4f}")
-    print(f"ONNX    - Live: {onnx_probs[0]:.4f}, Spoof: {onnx_probs[1]:.4f}")
-    print(f"NCNN    - Live: {ncnn_probs[0]:.4f}, Spoof: {ncnn_probs[1]:.4f}")
+    print(f"PyTorch - Live: {pt_probs[0]:.4f}, Spoof: {pt_probs[1]:.4f} | ⏱ {pt_time:.4f}s")
+    print(f"ONNX    - Live: {onnx_probs[0]:.4f}, Spoof: {onnx_probs[1]:.4f} | ⏱ {onnx_time:.4f}s")
+    print(f"NCNN    - Live: {ncnn_probs[0]:.4f}, Spoof: {ncnn_probs[1]:.4f} | ⏱ {ncnn_time:.4f}s")
 
     # Tính sai khác
     pt_diff = np.abs(pt_probs - ncnn_probs)
@@ -72,14 +79,26 @@ def compare_models(image_path):
     print(f"Δ Sai khác giữa PyTorch và NCNN: {pt_diff}, Tổng: {np.sum(pt_diff):.6f}")
     print(f"Δ Sai khác giữa ONNX và NCNN: {onnx_diff}, Tổng: {np.sum(onnx_diff):.6f}")
 
-# Lặp qua các ảnh từ anh_0.jpg đến anh_10.jpg
+    # Cập nhật thống kê thời gian
+    stats['pytorch'].append(pt_time)
+    stats['onnx'].append(onnx_time)
+    stats['ncnn'].append(ncnn_time)
+
+# Lặp qua các ảnh và tính trung bình thời gian
 def compare_images_in_folder():
-    for i in range(6,21):  # từ 0 đến 10
+    stats = {'pytorch': [], 'onnx': [], 'ncnn': []}
+    for i in range(6, 21):
         img_path = f"./dataset/train/Akshay Kumar/anh_{i}.jpg"
         if os.path.exists(img_path):
-            compare_models(img_path)
+            compare_models(img_path, stats)
         else:
             print(f"⚠️ Không tìm thấy ảnh: {img_path}")
+
+    # In thời gian trung bình
+    print("\n📊 Thời gian suy luận trung bình:")
+    print(f"PyTorch: {np.mean(stats['pytorch']):.4f}s")
+    print(f"ONNX   : {np.mean(stats['onnx']):.4f}s")
+    print(f"NCNN   : {np.mean(stats['ncnn']):.4f}s")
 
 if __name__ == "__main__":
     compare_images_in_folder()

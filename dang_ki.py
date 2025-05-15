@@ -34,6 +34,15 @@ else:
     print("Tạo FAISS index mới...")
     index = faiss.IndexFlatL2(D)
 
+def align_face_by_eyes(face, left_eye, right_eye):
+    dx = right_eye[0] - left_eye[0]
+    dy = right_eye[1] - left_eye[1]
+    angle = np.degrees(np.arctan2(dy, dx))
+    eyes_center = ((left_eye[0] + right_eye[0]) // 2, (left_eye[1] + right_eye[1]) // 2)
+    rot_mat = cv2.getRotationMatrix2D(eyes_center, angle, scale=1.0)
+    aligned = cv2.warpAffine(face, rot_mat, (face.shape[1], face.shape[0]), flags=cv2.INTER_LINEAR)
+    return aligned
+
 def resize_with_padding(image, target_size=(112, 112)):
     h, w = image.shape[:2]
     scale = min(target_size[0] / h, target_size[1] / w)
@@ -53,26 +62,39 @@ def resize_with_padding(image, target_size=(112, 112)):
 def extract_faces_from_frame(frame):
     results = model(frame)
     face_vectors = []
-    
-    for box in results[0].boxes:
+
+    for box, kps in zip(results[0].boxes, results[0].keypoints.xy):
         conf = box.conf[0].item()
         if conf < CONFIDENCE_THRESHOLD:
             continue
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-        
+
+        # Vẽ bounding box để quan sát
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        
+
         face = frame[y1:y2, x1:x2]
         if face.size == 0:
             continue
+
+        # Xoay ảnh face nếu có keypoints (left_eye, right_eye)
+        if len(kps) >= 2:
+            left_eye = kps[0]
+            right_eye = kps[1]
+
+            left_eye = (int(left_eye[0]) - x1, int(left_eye[1]) - y1)
+            right_eye = (int(right_eye[0]) - x1, int(right_eye[1]) - y1)
+
+            face = align_face_by_eyes(face, left_eye, right_eye)
+
         face_vector = resize_with_padding(face, TARGET_SIZE)
         face_vectors.append(face_vector)
-    
+
     return face_vectors
+
 
 def get_face_label():
     root = tk.Tk()
-    root.withdraw()  # Ẩn cửa sổ chính
+    root.withdraw()
     label = simpledialog.askstring("Face Label", "Enter face label:")
     return label
 
@@ -81,34 +103,31 @@ def capture_and_store_faces():
     if not label:
         print("No label entered. Exiting...")
         exit()
-    
+
     cap = cv2.VideoCapture(2)
     if not cap.isOpened():
         print("Không thể mở camera")
         return
-    
+
     count = 0
-    capturing = False  # Biến kiểm soát trạng thái lấy khuôn mặt
+    capturing = False
 
     while True:
         ret, frame = cap.read()
         if not ret:
             print("Không thể lấy khung hình từ camera")
             break
-        
+
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):  # Thoát
+        if key == ord('q'):
             break
-        elif key == ord('t'):  # Bắt đầu trích xuất khuôn mặt
+        elif key == ord('t'):
             capturing = True
             print("Bắt đầu lấy khuôn mặt...")
 
         faces = extract_faces_from_frame(frame)
-        
-        # Hiển thị số ảnh đã lấy trên màn hình
         text = f"press 't' to start count: {count}/10"
         cv2.putText(frame, text, (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-
         cv2.imshow("Camera", frame)
 
         if capturing and count < 10:
@@ -122,8 +141,7 @@ def capture_and_store_faces():
 
     cap.release()
     cv2.destroyAllWindows()
-    
-    # Lưu lại FAISS index và labels
+
     faiss.write_index(index, index_file)
     np.save(labels_file, labels)
     print("Cập nhật và lưu FAISS index cùng nhãn thành công.")
