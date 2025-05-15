@@ -10,6 +10,9 @@ import os
 
 CONFIDENCE_THRESHOLD = 0.7
 TARGET_SIZE = (112, 112)
+SQUARE_SIZE = 300  # Kích thước khung vuông ở giữa
+CENTER_THRESHOLD = 0.1  # Ngưỡng để xác định khuôn mặt ở trung tâm
+SIZE_THRESHOLD = 0.1  # Ngưỡng để xác định kích thước khuôn mặt phù hợp
 
 # Load model YOLOv8-Face
 model = YOLO("yolov8n-face.pt")
@@ -59,9 +62,36 @@ def resize_with_padding(image, target_size=(112, 112)):
     features = session.run(None, {input_name: padded})[0]
     return features.flatten()
 
+def is_face_approximates_square(box, frame_shape, square_size):
+    x1, y1, x2, y2 = map(int, box.xyxy[0])
+    face_center_x = (x1 + x2) / 2
+    face_center_y = (y1 + y2) / 2
+    frame_center_x = frame_shape[1] / 2
+    frame_center_y = frame_shape[0] / 2
+    
+    # Kiểm tra vị trí trung tâm
+    center_distance_x = abs(face_center_x - frame_center_x) / frame_shape[1]
+    center_distance_y = abs(face_center_y - frame_center_y) / frame_shape[0]
+    is_centered = center_distance_x < CENTER_THRESHOLD and center_distance_y < CENTER_THRESHOLD
+    
+    # Kiểm tra kích thước
+    face_size = max(x2 - x1, y2 - y1)
+    size_ratio = abs(face_size - square_size) / square_size
+    is_size_match = size_ratio < SIZE_THRESHOLD
+    
+    return is_centered and is_size_match
+
+def draw_center_square(frame, square_size):
+    h, w = frame.shape[:2]
+    top_left = (w//2 - square_size//2, h//2 - square_size//2)
+    bottom_right = (w//2 + square_size//2, h//2 + square_size//2)
+    cv2.rectangle(frame, top_left, bottom_right, (0, 255, 255), 2)  # Màu vàng
+    return frame
+
 def extract_faces_from_frame(frame):
     results = model(frame)
     face_vectors = []
+    valid_face = False
 
     for box, kps in zip(results[0].boxes, results[0].keypoints.xy):
         conf = box.conf[0].item()
@@ -69,28 +99,28 @@ def extract_faces_from_frame(frame):
             continue
         x1, y1, x2, y2 = map(int, box.xyxy[0])
 
-        # Vẽ bounding box để quan sát
+        # Vẽ bounding box xanh lá cây cho mọi khuôn mặt
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        face = frame[y1:y2, x1:x2]
-        if face.size == 0:
-            continue
+        # Kiểm tra xem khuôn mặt có xấp xỉ khung vuông vàng không
+        if is_face_approximates_square(box, frame.shape, SQUARE_SIZE):
+            valid_face = True
+            face = frame[y1:y2, x1:x2]
+            if face.size == 0:
+                continue
 
-        # Xoay ảnh face nếu có keypoints (left_eye, right_eye)
-        if len(kps) >= 2:
-            left_eye = kps[0]
-            right_eye = kps[1]
+            # Xoay ảnh face nếu có keypoints
+            if len(kps) >= 2:
+                left_eye = kps[0]
+                right_eye = kps[1]
+                left_eye = (int(left_eye[0]) - x1, int(left_eye[1]) - y1)
+                right_eye = (int(right_eye[0]) - x1, int(right_eye[1]) - y1)
+                face = align_face_by_eyes(face, left_eye, right_eye)
 
-            left_eye = (int(left_eye[0]) - x1, int(left_eye[1]) - y1)
-            right_eye = (int(right_eye[0]) - x1, int(right_eye[1]) - y1)
+            face_vector = resize_with_padding(face, TARGET_SIZE)
+            face_vectors.append(face_vector)
 
-            face = align_face_by_eyes(face, left_eye, right_eye)
-
-        face_vector = resize_with_padding(face, TARGET_SIZE)
-        face_vectors.append(face_vector)
-
-    return face_vectors
-
+    return face_vectors, valid_face
 
 def get_face_label():
     root = tk.Tk()
@@ -110,7 +140,6 @@ def capture_and_store_faces():
         return
 
     count = 0
-    capturing = False
 
     while True:
         ret, frame = cap.read()
@@ -118,26 +147,27 @@ def capture_and_store_faces():
             print("Không thể lấy khung hình từ camera")
             break
 
+        # Vẽ khung vuông vàng ở giữa
+        frame = draw_center_square(frame, SQUARE_SIZE)
+
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        elif key == ord('t'):
-            capturing = True
-            print("Bắt đầu lấy khuôn mặt...")
 
-        faces = extract_faces_from_frame(frame)
-        text = f"press 't' to start count: {count}/10"
+        faces, valid_face = extract_faces_from_frame(frame)
+        text = f"Count: {count}/10 - Align face with yellow square"
         cv2.putText(frame, text, (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
         cv2.imshow("Camera", frame)
 
-        if capturing and count < 10:
-            if faces:
-                face_vectors = np.array(faces, dtype=np.float32)
-                faiss.normalize_L2(face_vectors)
-                index.add(face_vectors)
-                labels.extend([f"{label}"] * len(faces))
-                count += 1
-                print(f"Ảnh {count}/10 đã lưu với nhãn {label}.")
+        if valid_face and count < 10 and faces:
+            face_vectors = np.array(faces, dtype=np.float32)
+            faiss.normalize_L2(face_vectors)
+            index.add(face_vectors)
+            labels.extend([f"{label}"] * len(faces))
+            count += 1
+            print(f"Ảnh {count}/10 đã lưu với nhãn {label}.")
+            # Đợi một chút để tránh lưu nhiều ảnh liên tiếp
+            # time.sleep(0.5)
 
     cap.release()
     cv2.destroyAllWindows()
