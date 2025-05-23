@@ -2,11 +2,98 @@ import cv2
 import numpy as np
 import time
 import faiss
-import onnxruntime as ort
+import tensorrt as trt
+import pycuda.driver as cuda
+import pycuda.autoinit
 from scipy.spatial.distance import cosine
 import torchvision.transforms as transforms
 from PIL import Image
 import torch
+
+# TensorRT Logger
+TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+
+class TensorRTEngine:
+    def __init__(self, engine_path):
+        self.engine_path = engine_path
+        self.engine = None
+        self.context = None
+        self.inputs = []
+        self.outputs = []
+        self.stream = None
+        self._load_engine()
+    
+    def _load_engine(self):
+        # Load TensorRT engine
+        with open(self.engine_path, 'rb') as f, trt.Runtime(TRT_LOGGER) as runtime:
+            self.engine = runtime.deserialize_cuda_engine(f.read())
+        
+        self.context = self.engine.create_execution_context()
+        self.stream = cuda.Stream()
+        
+        # Print engine info for debugging
+        print(f"=== TensorRT Engine Info: {self.engine_path} ===")
+        print(f"Number of IO tensors: {self.engine.num_io_tensors}")
+        
+        # Allocate buffers using new TensorRT 10+ API
+        for i in range(self.engine.num_io_tensors):
+            tensor_name = self.engine.get_tensor_name(i)
+            tensor_shape = self.engine.get_tensor_shape(tensor_name)
+            tensor_dtype = self.engine.get_tensor_dtype(tensor_name)
+            tensor_mode = self.engine.get_tensor_mode(tensor_name)
+            
+            print(f"Tensor {i}: {tensor_name}, Shape: {tensor_shape}, Type: {tensor_dtype}")
+            
+            size = trt.volume(tensor_shape)
+            dtype = trt.nptype(tensor_dtype)
+            
+            # Allocate host and device buffers
+            host_mem = cuda.pagelocked_empty(size, dtype)
+            device_mem = cuda.mem_alloc(host_mem.nbytes)
+            
+            if tensor_mode == trt.TensorIOMode.INPUT:
+                self.inputs.append({
+                    'host': host_mem, 
+                    'device': device_mem, 
+                    'name': tensor_name,
+                    'shape': tensor_shape
+                })
+                print(f"  -> INPUT tensor")
+            else:
+                self.outputs.append({
+                    'host': host_mem, 
+                    'device': device_mem, 
+                    'name': tensor_name,
+                    'shape': tensor_shape
+                })
+                print(f"  -> OUTPUT tensor")
+        print("=======================================")
+    
+    def infer(self, input_data):
+        # Copy input data to host buffer
+        np.copyto(self.inputs[0]['host'], input_data.ravel())
+        
+        # Transfer input data to GPU
+        cuda.memcpy_htod_async(self.inputs[0]['device'], self.inputs[0]['host'], self.stream)
+        
+        # Set tensor addresses for TensorRT 10.x
+        for inp in self.inputs:
+            self.context.set_tensor_address(inp['name'], inp['device'])
+        for out in self.outputs:
+            self.context.set_tensor_address(out['name'], out['device'])
+        
+        # Execute inference using execute_async_v3 for TensorRT 10+
+        self.context.execute_async_v3(stream_handle=self.stream.handle)
+        
+        # Transfer predictions back from GPU
+        cuda.memcpy_dtoh_async(self.outputs[0]['host'], self.outputs[0]['device'], self.stream)
+        
+        # Synchronize stream
+        self.stream.synchronize()
+        
+        # Return output with correct shape
+        output_shape = self.outputs[0]['shape']
+        return self.outputs[0]['host'].reshape(output_shape)
 
 # Load FAISS index và nhãn
 index = faiss.read_index("face_index.bin")
@@ -25,10 +112,10 @@ def find_face_label(query_vector, threshold=0.7):
             score_max = similarity_score
     return "unknown", score_max
 
-# Load ArcFace model
-arcface_model = "w600k_r50.onnx"
-session_arcface = ort.InferenceSession(arcface_model, providers=['CPUExecutionProvider'])
-input_name_arcface = session_arcface.get_inputs()[0].name
+# Load TensorRT engines
+yolo_engine = TensorRTEngine("yolov8n-face.engine")
+arcface_engine = TensorRTEngine("w600k_r50.engine")
+aenet_engine = TensorRTEngine("AENet.engine")
 
 def resize_with_padding(image, target_size=(112, 112)):
     h, w = image.shape[:2]
@@ -44,14 +131,13 @@ def resize_with_padding(image, target_size=(112, 112)):
     padded = np.transpose(padded, (2, 0, 1))
     padded = (padded - 127.5) / 127.5
     padded = np.expand_dims(padded, axis=0).astype(np.float32)
-    padded = session_arcface.run(None, {input_name_arcface: padded})[0]
-    return padded.flatten()
-
-session = ort.InferenceSession("yolov8n-face.onnx", providers=['CPUExecutionProvider'])
-input_name = session.get_inputs()[0].name
-input_size = (640, 640)
-def detect_faces_onnx(img, conf_threshold=0.7):
     
+    # Use TensorRT engine for inference
+    output = arcface_engine.infer(padded)
+    return output.flatten()
+
+input_size = (640, 640)
+def detect_faces_trt(img, conf_threshold=0.7):
     start_time = time.time()
     img_resized = cv2.resize(img, input_size)
     img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
@@ -59,11 +145,22 @@ def detect_faces_onnx(img, conf_threshold=0.7):
     img_transposed = np.transpose(img_normalized, (2, 0, 1))
     input_tensor = np.expand_dims(img_transposed, axis=0)
     
-    outputs = session.run(None, {input_name: input_tensor})
+    # Use TensorRT engine for inference
+    outputs = yolo_engine.infer(input_tensor)
     elapsed = time.time() - start_time
     
-    preds = outputs[0]
-    preds = np.transpose(preds, (0, 2, 1))[0]  # [8400, 20]
+    print(f"Debug: YOLO output shape: {outputs.shape}")
+    
+    # Reshape output to match original format [1, 20, 8400] -> [8400, 20]
+    if len(outputs.shape) == 3:  # [1, 20, 8400]
+        preds = np.transpose(outputs, (0, 2, 1))[0]  # [8400, 20]
+    elif len(outputs.shape) == 2:  # [20, 8400]
+        preds = outputs.transpose(1, 0)  # [8400, 20]
+    else:
+        preds = outputs.reshape(-1, 20)  # Fallback reshape
+    
+    print(f"Debug: Predictions shape after reshape: {preds.shape}")
+    
     boxes = []
     confidences = []
     keypoints_list = []
@@ -82,7 +179,7 @@ def detect_faces_onnx(img, conf_threshold=0.7):
         
         # Extract keypoints (assuming YOLOv8-face outputs: left_eye, right_eye, nose, mouth_left, mouth_right)
         kps = []
-        if len(pred) >= 15:  # Check if keypoints are present (5 keypoints * 3 values: x, y, confidence)
+        if len(pred) >= 20:  # YOLOv8-face có 20 outputs: 4 bbox + 1 conf + 15 keypoints (5*3)
             for i in range(5):  # 5 keypoints
                 kp_x = int(pred[5 + i*3] * img.shape[1] / input_size[0])
                 kp_y = int(pred[5 + i*3 + 1] * img.shape[0] / input_size[1])
@@ -95,16 +192,21 @@ def detect_faces_onnx(img, conf_threshold=0.7):
             kps = [[0, 0]] * 5  # Default if no keypoints
         keypoints_list.append(kps)
     
+    if len(boxes) == 0:
+        return [], elapsed
+    
     indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, 0.4)
     results_list = []
-    for i in indices:
-        i = i[0] if isinstance(i, (list, np.ndarray)) else i
-        x, y, w, h = boxes[i]
-        results_list.append({
-            'xyxy': [x, y, x + w, y + h],
-            'conf': confidences[i],
-            'keypoints': keypoints_list[i]
-        })
+    
+    if len(indices) > 0:
+        for i in indices:
+            i = i[0] if isinstance(i, (list, np.ndarray)) else i
+            x, y, w, h = boxes[i]
+            results_list.append({
+                'xyxy': [x, y, x + w, y + h],
+                'conf': confidences[i],
+                'keypoints': keypoints_list[i]
+            })
     
     return results_list, elapsed
 
@@ -118,10 +220,12 @@ def preprocess_frame(frame):
     img = transform(img).unsqueeze(0)
     return img
 
-def predict_frame(session, input_name, frame):
+def predict_frame_trt(aenet_engine, frame):
     img_tensor = preprocess_frame(frame)
     onnx_input = img_tensor.numpy().astype(np.float32)
-    onnx_output = session.run(None, {input_name: onnx_input})[0]
+    
+    # Use TensorRT engine for inference
+    onnx_output = aenet_engine.infer(onnx_input)
     probabilities = torch.nn.functional.softmax(torch.tensor(onnx_output), dim=1).numpy()[0]
     label = "Spoof" if probabilities[1] > probabilities[0] else "Live"
     return label, probabilities[0], probabilities[1]
@@ -135,11 +239,7 @@ def align_face_by_eyes(image, left_eye, right_eye):
     aligned = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]), flags=cv2.INTER_CUBIC)
     return aligned
 
-def run_camera(model_path="AENet.onnx"):
-    session_aenet = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-    input_name_aenet = session_aenet.get_inputs()[0].name
-    print("Models loaded successfully.")
-
+def run_camera():
     cap = cv2.VideoCapture(2)
     if not cap.isOpened():
         raise ValueError("Không thể mở camera.")
@@ -151,7 +251,7 @@ def run_camera(model_path="AENet.onnx"):
             break
 
         start_time = time.time()
-        results, yolo_time = detect_faces_onnx(frame)
+        results, yolo_time = detect_faces_trt(frame)
 
         face_process_time = 0
         find_label_time = 0
@@ -167,9 +267,10 @@ def run_camera(model_path="AENet.onnx"):
             aligned_face = None
             if len(result['keypoints']) >= 2:
                 left_eye, right_eye = result['keypoints'][0], result['keypoints'][1]
-                left_eye = (left_eye[0] - x1, left_eye[1] - y1)
-                right_eye = (right_eye[0] - x1, right_eye[1] - y1)
-                aligned_face = align_face_by_eyes(face, left_eye, right_eye)
+                if left_eye != [0, 0] and right_eye != [0, 0]:  # Valid keypoints
+                    left_eye = (left_eye[0] - x1, left_eye[1] - y1)
+                    right_eye = (right_eye[0] - x1, right_eye[1] - y1)
+                    aligned_face = align_face_by_eyes(face, left_eye, right_eye)
 
             face_for_embedding = aligned_face if aligned_face is not None else face
 
@@ -182,7 +283,7 @@ def run_camera(model_path="AENet.onnx"):
             find_label_time += time.time() - find_label_start
 
             predict_start = time.time()
-            label, prob_live, prob_spoof = predict_frame(session_aenet, input_name_aenet, face_for_embedding)
+            label, prob_live, prob_spoof = predict_frame_trt(aenet_engine, face_for_embedding)
             predict_time += time.time() - predict_start
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0) if prob_live > 0.95 else (0, 0, 255), 2)

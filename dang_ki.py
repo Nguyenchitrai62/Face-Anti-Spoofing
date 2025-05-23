@@ -12,7 +12,8 @@ CONFIDENCE_THRESHOLD = 0.7
 TARGET_SIZE = (112, 112)
 SQUARE_SIZE = 300  # Kích thước khung vuông ở giữa
 CENTER_THRESHOLD = 0.1  # Ngưỡng để xác định khuôn mặt ở trung tâm
-SIZE_THRESHOLD = 0.1 # Ngưỡng để xác định kích thước khuôn mặt phù hợp
+SIZE_THRESHOLD = 0.1  # Ngưỡng để xác định kích thước khuôn mặt phù hợp
+EXTRACT_INTERVAL = 0.5  # Khoảng thời gian tối thiểu giữa các lần trích xuất (giây)
 
 # Load model YOLOv8-Face
 model = YOLO("yolov8n-face.pt")
@@ -140,6 +141,7 @@ def capture_and_store_faces():
         return
 
     count = 0
+    last_extract_time = 0  # Thời gian của lần trích xuất gần nhất
 
     while True:
         ret, frame = cap.read()
@@ -159,15 +161,16 @@ def capture_and_store_faces():
         cv2.putText(frame, text, (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
         cv2.imshow("Camera", frame)
 
-        if valid_face and count < 10 and faces:
+        # Kiểm tra nếu khuôn mặt hợp lệ và đủ thời gian kể từ lần trích xuất trước
+        current_time = time.time()
+        if valid_face and count < 10 and faces and (current_time - last_extract_time >= EXTRACT_INTERVAL):
             face_vectors = np.array(faces, dtype=np.float32)
             faiss.normalize_L2(face_vectors)
             index.add(face_vectors)
             labels.extend([f"{label}"] * len(faces))
             count += 1
+            last_extract_time = current_time  # Cập nhật thời gian trích xuất
             print(f"Ảnh {count}/10 đã lưu với nhãn {label}.")
-            # Đợi một chút để tránh lưu nhiều ảnh liên tiếp
-            # time.sleep(0.5)
 
     cap.release()
     cv2.destroyAllWindows()
