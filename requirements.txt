@@ -1,0 +1,9 @@
+numpy
+opencv-python
+Pillow
+scipy
+ultralytics
+faiss-cpu
+onnxruntime
+matplotlib
+tqdm
